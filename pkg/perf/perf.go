@@ -115,16 +115,12 @@ func NewPerfCache(logger log.Logger) *PerfCache {
 }
 
 // CacheForPid returns the PerfMap for the given pid if it exists.
-func (p *PerfCache) CacheForPid(pid uint32) (*PerfMap, error) {
+func (p *PerfCache) CacheForPid(pid, upid uint32) (*PerfMap, error) {
 	// NOTE(zecke): There are various limitations and things to note.
 	// 1st) The input file is "tainted" and under control by the user. By all
 	//      means it could be an infinitely large.
-	// 2nd) There might be a file called /tmp/perf-${nspid}.txt but that might
-	//      be in a different mount_namespace(7) and pid_namespace(7). We don't
-	//      map these yet. Using /proc/$pid/tmp/perf-$pid.txt is not enough and
-	//      hence containerized workloads are broken.
 
-	perfFile := fmt.Sprintf("/tmp/perf-%d.map", pid)
+	perfFile := fmt.Sprintf("/proc/%d/root/tmp/perf-%d.map", pid, upid)
 	// TODO(zecke): Log other than file not found errors?
 	h, err := hash.File(p.fs, perfFile)
 	if err != nil {

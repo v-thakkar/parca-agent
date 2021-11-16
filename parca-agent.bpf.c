@@ -61,6 +61,7 @@
 typedef struct stack_count_key
 {
   u32 pid;
+  u32 upid;
   int user_stack_id;
   int kernel_stack_id;
 } stack_count_key_t;
@@ -90,6 +91,23 @@ bpf_map_lookup_or_try_init (void *map, const void *key, const void *init)
   return bpf_map_lookup_elem (map, key);
 }
 
+static __always_inline pid_t pid_namespace_pid()
+{
+  struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+  struct pid *pid;
+  unsigned int level;
+  struct upid upid;
+  
+  /*  get the pid namespace by following task_active_pid_ns(),
+   *  	 *  pid->numbers[pid->level].ns
+   *  	 	 */
+  pid = BPF_CORE_READ(t, thread_pid);
+  level = BPF_CORE_READ(pid, level);
+  bpf_core_read(&upid, sizeof(upid), &pid->numbers[level]);
+  
+  return upid.nr;
+}
+
 // This code gets a bit complex. Probably not suitable for casual hacking.
 SEC ("perf_event")
 int
@@ -102,8 +120,10 @@ do_sample (struct bpf_perf_event_data *ctx)
   if (pid == 0)
     return 0;
 
+  u32 upid = pid_namespace_pid ();
+
   // create map key
-  stack_count_key_t key = { .pid = tgid };
+  stack_count_key_t key = { .pid = tgid, .upid = upid };
 
   // get stacks
   key.user_stack_id = bpf_get_stackid (ctx, &stack_traces, BPF_F_USER_STACK);

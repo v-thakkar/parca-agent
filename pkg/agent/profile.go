@@ -298,6 +298,12 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, now time.Time, counts,
 		}
 		pid := byteOrder.Uint32(pidBytes)
 
+		upidBytes := make([]byte, 4)
+		if _, err := io.ReadFull(r, upidBytes); err != nil {
+			return fmt.Errorf("read pid bytes: %w", err)
+		}
+		upid := byteOrder.Uint32(upidBytes)
+
 		userStackIDBytes := make([]byte, 4)
 		if _, err := io.ReadFull(r, userStackIDBytes); err != nil {
 			return fmt.Errorf("read user stack ID bytes: %w", err)
@@ -375,7 +381,7 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, now time.Time, counts,
 		}
 
 		// User stack
-		perfMap, err := p.perfCache.CacheForPid(pid)
+		perfMap, err := p.perfCache.CacheForPid(pid, upid)
 		if err != nil {
 			// We expect only a minority of processes to have a JIT and produce
 			// the perf map.
