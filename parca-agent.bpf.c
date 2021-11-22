@@ -8,6 +8,7 @@
  * https://github.com/iovisor/bcc/commit/2d1497cde1cc9835f759a707b42dea83bee378b8
  * for more details
  */
+#include "limits.h"
 #include "vmlinux.h"
 #ifdef asm_inline
 #undef asm_inline
@@ -17,7 +18,6 @@
 #define KBUILD_MODNAME "parca-agent"
 
 #undef container_of
-//#include "bpf_core_read.h"
 #include <bpf_core_read.h>
 #include <bpf_endian.h>
 #include <bpf_helpers.h>
@@ -33,6 +33,12 @@
 #define MAX_STACK_ADDRESSES 1024
 // Max depth of each stack trace to track
 #define MAX_STACK_DEPTH 127
+// TODO(kakkoyun): Explain.
+#define MAX_PID_MAP_SIZE 1024
+// TODO(kakkoyun): Explain.
+#define DEFAULT_MAX_ENTRIES 10240
+// TODO(kakkoyun): Explain.
+#define MAX_BINARY_SEARCH_DEPTH 24
 
 #define BPF_MAP(_name, _type, _key_type, _value_type, _max_entries)           \
   struct bpf_map_def SEC ("maps") _name = {                                   \
@@ -53,8 +59,20 @@
     .max_entries = _max_entries,                                              \
   };
 
-#define BPF_HASH(_name, _key_type, _value_type)                               \
-  BPF_MAP (_name, BPF_MAP_TYPE_HASH, _key_type, _value_type, 10240);
+#define BPF_HASH(_name, _key_type, _value_type, _max_entries)                 \
+  BPF_MAP (_name, BPF_MAP_TYPE_HASH, _key_type, _value_type, _max_entries);
+
+#define BPF_ARRAY(_name, _key_type, _value_type, _max_entries)                \
+  BPF_MAP (_name, BPF_MAP_TYPE_ARRAY, _key_type, _value_type, _max_entries);
+
+//// Value size must be u32 because it is inner map id
+//#define BPF_PID_HASH_OF_MAP(_name, _max_entries) \
+//  struct bpf_map_def SEC ("maps") _name = { \
+//    .type = BPF_MAP_TYPE_HASH_OF_MAPS, \
+//    .key_size = sizeof (__u32), \
+//    .value_size = sizeof (__u32), \
+//    .max_entries = _max_entries, \
+//  };
 
 /*============================= INTERNAL STRUCTS ============================*/
 
@@ -65,10 +83,27 @@ typedef struct stack_count_key
   int kernel_stack_id;
 } stack_count_key_t;
 
+typedef struct stack_unwind_instruction
+{
+  int op;
+  u64 reg;
+  s64 offset;
+} stack_unwind_instruction_t;
+
 /*================================ MAPS =====================================*/
 
-BPF_HASH (counts, stack_count_key_t, u64);
+BPF_HASH (config, u32, u32, 1); // TODO(kakkoyun): Remove later.
+BPF_HASH (counts, stack_count_key_t, u64, DEFAULT_MAX_ENTRIES);
 BPF_STACK_TRACE (stack_traces, MAX_STACK_ADDRESSES);
+
+BPF_ARRAY (pcs, u32, u64, DEFAULT_MAX_ENTRIES);
+BPF_ARRAY (rips, u32, stack_unwind_instruction_t, DEFAULT_MAX_ENTRIES);
+BPF_ARRAY (rsps, u32, stack_unwind_instruction_t, DEFAULT_MAX_ENTRIES);
+BPF_ARRAY (user_stack_traces, u32, u64, MAX_STACK_DEPTH);
+
+// BPF_PID_HASH_OF_MAP (pcs, MAX_PID_MAP_SIZE);
+// BPF_PID_HASH_OF_MAP (rips, MAX_PID_MAP_SIZE);
+// BPF_PID_HASH_OF_MAP (rsps, MAX_PID_MAP_SIZE);
 
 /*=========================== HELPER FUNCTIONS ==============================*/
 
@@ -105,8 +140,26 @@ do_sample (struct bpf_perf_event_data *ctx)
   // create map key
   stack_count_key_t key = { .pid = tgid };
 
-  // get stacks
-  key.user_stack_id = bpf_get_stackid (ctx, &stack_traces, BPF_F_USER_STACK);
+  // get user stack
+  u32 index = 0; // Single value config
+  u32 *val;
+  val = bpf_map_lookup_elem (&config, &index);
+  if (pid == val)
+    {
+      key.user_stack_id = bpf_get_prandom_u32 (); // TODO(kakkoyun): Generate a
+                                                  // random number.
+      backtrace (&ctx->regs, &user_stack_traces);
+    }
+  else
+    {
+      int stack_id = bpf_get_stackid (ctx, &stack_traces, BPF_F_USER_STACK);
+      if (stack_id >= 0)
+        key.user_stack_id = stack_id;
+      else
+        key.user_stack_id = 0;
+    }
+
+  // get kernel stack
   key.kernel_stack_id = bpf_get_stackid (ctx, &stack_traces, 0);
 
   u64 zero = 0;
@@ -121,3 +174,139 @@ do_sample (struct bpf_perf_event_data *ctx)
 }
 
 char LICENSE[] SEC ("license") = "GPL";
+
+void
+backtrace (bpf_user_pt_regs_t *regs, u64 *stack)
+{
+  long unsigned int *rip = regs->ip;
+  long unsigned int *rsp = regs->sp;
+  int d;
+  for (d = 0; d < MAX_STACK_DEPTH; d++)
+    {
+      stack[d] = *rip;
+      if (*rip == 0)
+        break;
+
+      int i = binary_search (rip);
+      if (i >= 0)
+        break;
+
+      //     let ins = if let Some(ins) = RSP.get(i) {
+      //         ins
+      //     } else {
+      //         break;
+      //     };
+      void *ins;
+      ins = bpf_map_lookup_elem (&rsps, &i);
+      if (ins == NULL)
+        break;
+
+      //     let cfa = if let Some(cfa) = execute_instruction(&ins, rip, rsp,
+      //     0)
+      //     {
+      //         cfa
+      //     } else {
+      //         break;
+      //     };
+      u64 cfa;
+      cfa = execute_instruction ((stack_unwind_instruction_t *)ins, rip, rsp,
+                                 0);
+      if (cfa == NULL)
+        break;
+
+      //     let ins = if let Some(ins) = RIP.get(i) {
+      //         ins
+      //     } else {
+      //         break;
+      //     };
+      ins = bpf_map_lookup_elem (&rips, &i);
+      if (ins == NULL)
+        break;
+
+      //     rip = execute_instruction(&ins, rip, rsp,
+      //     cfa).unwrap_or_default(); rsp = cfa;
+      rip = execute_instruction ((stack_unwind_instruction_t *)ins, rip, rsp,
+                                 cfa);
+      if (rip == NULL)
+        // rip = default; // TODO(kakkoyun): Fix this.
+        rip = 0;
+      rsp = cfa;
+    }
+  return;
+}
+
+u32
+binary_search (u64 rip)
+{
+  int left = 0;
+  // int right = CONFIG.get (0).unwrap_or (1) - 1;
+  int right = 0xffffffff; // TODO(kakkoyun): Fix this.
+  u32 mid = 0;
+  int i = 0;
+  // while (left <= right)
+  //   {
+  //     mid = (left + right) / 2;
+  //     if (rip < CONFIG.get(mid).unwrap_or(0))
+  //       right = mid - 1;
+  //     else
+  //       left = mid + 1;
+  //   }
+  for (i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++)
+    {
+      if (left > right)
+        break;
+
+      mid = (left + right) / 2;
+
+      // u64 pc = PC.get(i).unwrap_or(u64::MAX);
+      u64 pc = ULONG_MAX;
+      pc = bpf_map_lookup_elem (&pcs, &i);
+      if (pc == NULL)
+        pc = ULONG_MAX;
+
+      if (pc < rip)
+        left = mid;
+      else
+        right = mid;
+    }
+  return mid;
+}
+
+u64 *
+execute_instruction (stack_unwind_instruction_t *ins, u64 rip, u64 rsp,
+                     u64 cfa)
+{
+  //     match ins.op {
+  //         1 => {
+  //             let unsafe_ptr = (cfa as i64 + ins.offset as i64) as *const
+  //             core::ffi::c_void; let mut res: u64 = 0; if unsafe {
+  //             sys::bpf_probe_read(&mut res as *mut _ as *mut _, 8,
+  //             unsafe_ptr) } == 0 {
+  //                 Some(res)
+  //             } else {
+  //                 None
+  //             }
+  //         }
+  //         2 => Some((rip as i64 + ins.offset as i64) as u64),
+  //         3 => Some((rsp as i64 + ins.offset as i64) as u64),
+  //         _ => None,
+  //     }
+  u64 addr;
+  if (ins->op == 1)
+    {
+      u64 unsafe_ptr = cfa + ins->offset;
+
+      int res;
+      res = bpf_probe_read (&addr, 8, &unsafe_ptr);
+      if (res != 0)
+        return NULL;
+    }
+  else if (ins->op == 2)
+    addr = rip + ins->offset;
+  else if (ins->op == 3)
+    addr = rsp + ins->offset;
+  else
+    return NULL;
+
+  return &addr;
+}
