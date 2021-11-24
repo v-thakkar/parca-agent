@@ -234,7 +234,7 @@ func (p *CgroupProfiler) Run(ctx context.Context) error {
 		return fmt.Errorf("get stack traces map: %w", err)
 	}
 
-	cfg, err := m.GetMap("config")
+	cfg, err := m.GetMap("lookup")
 	if err != nil {
 		return fmt.Errorf("get config map: %w", err)
 	}
@@ -310,12 +310,6 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, now time.Time, counts,
 
 	it := counts.Iterator()
 	byteOrder := byteorder.GetHostByteOrder()
-
-	unwindInstructions := map[uint32]struct {
-		pcs  []uint64
-		rips []unwind.Instruction
-		rsps []unwind.Instruction
-	}{}
 
 	// TODO(brancz): Use libbpf batch functions.
 	for it.Next() {
@@ -442,28 +436,8 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, now time.Time, counts,
 					// TODO(kakkoyun): Move to an earlier stage.
 					// If we don't have a mapping with a build ID, we can't symbolize a stack anyways.
 					if m != nil && m.BuildID != "" {
-						// TODO(kakkoyun): For now.
-						// Only put a specific build ID (Redpanda).
-						// Put the pid in the config BPF map.
-						table, err := unwinder.UnwindTableForPid(pid)
-						if err != nil {
+						if err := updateUnwindTable(p.logger, unwinder, cfg, pcs, rips, rsps, m, pid); err != nil {
 							level.Debug(p.logger).Log("msg", "failed to build unwind table", "pid", pid, "err", err)
-						} else {
-							level.Debug(p.logger).Log("msg", "unwind table built", "pid", pid, "buildid", m.BuildID, "size", len(table))
-							// TODO(kakkoyun): Either write directly to eBPF data structures, or copy later in the program.
-							pcs := make([]uint64, len(table))
-							rips := make([]unwind.Instruction, len(table))
-							rsps := make([]unwind.Instruction, len(table))
-							for i, row := range table {
-								pcs[i] = m.Start + row.Begin
-								rips[i] = row.RIP
-								rsps[i] = row.RSP
-							}
-							unwindInstructions[pid] = struct {
-								pcs  []uint64
-								rips []unwind.Instruction
-								rsps []unwind.Instruction
-							}{pcs: pcs, rips: rips, rsps: rsps}
 						}
 					}
 
@@ -569,32 +543,32 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, now time.Time, counts,
 		Profile: prof,
 	})
 
-	// Update unwind instructions!
-	for pid, val := range unwindInstructions {
-		id := pid
-		if err := cfg.Update(unsafe.Pointer(&id), unsafe.Pointer(&id)); err != nil {
-			// or break and clean?
-			return fmt.Errorf("failed to update config")
-		}
-
-		for i := range val.pcs {
-			key := i
-			if err := pcs.Update(unsafe.Pointer(&key), unsafe.Pointer(&val.pcs[key])); err != nil {
-				// or break and clean?
-				return fmt.Errorf("failed to update PCs")
-			}
-			if err := rips.Update(unsafe.Pointer(&key), unsafe.Pointer(&val.rips[key])); err != nil {
-				// or break and clean?
-				return fmt.Errorf("failed to update RIPs")
-			}
-			if err := rsps.Update(unsafe.Pointer(&key), unsafe.Pointer(&val.rsps[key])); err != nil {
-				// or break and clean?
-				return fmt.Errorf("failed to update RSPs")
-			}
-		}
-		// TODO(kakkoyun): Until we figure out, map of maps/
-		break
-	}
+	//// Update unwind instructions!
+	//for pid, val := range unwindInstructions {
+	//	id := pid
+	//	if err := cfg.Update(unsafe.Pointer(&id), unsafe.Pointer(&id)); err != nil {
+	//		// or break and clean?
+	//		return fmt.Errorf("failed to update config")
+	//	}
+	//
+	//	for i := range val.pcs {
+	//		key := i
+	//		if err := pcs.Update(unsafe.Pointer(&key), unsafe.Pointer(&val.pcs[key])); err != nil {
+	//			// or break and clean?
+	//			return fmt.Errorf("failed to update PCs")
+	//		}
+	//		if err := rips.Update(unsafe.Pointer(&key), unsafe.Pointer(&val.rips[key])); err != nil {
+	//			// or break and clean?
+	//			return fmt.Errorf("failed to update RIPs")
+	//		}
+	//		if err := rsps.Update(unsafe.Pointer(&key), unsafe.Pointer(&val.rsps[key])); err != nil {
+	//			// or break and clean?
+	//			return fmt.Errorf("failed to update RSPs")
+	//		}
+	//	}
+	//	// TODO(kakkoyun): Until we figure out, map of maps/
+	//	break
+	//}
 
 	// BPF iterators need the previous value to iterate to the next, so we
 	// can only delete the "previous" item once we've already iterated to
@@ -638,6 +612,61 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, now time.Time, counts,
 		err := counts.DeleteKey(unsafe.Pointer(&prev[0]))
 		if err != nil {
 			level.Warn(p.logger).Log("msg", "failed to delete count", "err", err)
+		}
+	}
+
+	return nil
+}
+
+func updateUnwindTable(logger log.Logger, unwinder *unwind.Unwinder, cfg *bpf.BPFMap, pcs *bpf.BPFMap, rips *bpf.BPFMap, rsps *bpf.BPFMap, m *profile.Mapping, pid uint32) error {
+	// TODO(kakkoyun): For now.
+	// Only put a specific build ID (Redpanda).
+	// Put the pid in the config BPF map.
+
+	zero := 0
+	pidBytes, err := cfg.GetValue(unsafe.Pointer(&zero))
+	if err != nil {
+		level.Debug(logger).Log("msg", "failed to get config value", "err", err)
+	}
+
+	byteOrder := byteorder.GetHostByteOrder()
+	existingPID := byteOrder.Uint32(pidBytes)
+
+	if existingPID == pid {
+		return nil
+	}
+
+	table, err := unwinder.UnwindTableForPid(pid)
+	if err != nil {
+		return fmt.Errorf("failed to build plan table: %w", err)
+	}
+	level.Debug(logger).Log("msg", "unwind table built", "pid", pid, "buildid", m.BuildID, "size", len(table))
+
+	if err := cfg.Update(unsafe.Pointer(&zero), unsafe.Pointer(&pid)); err != nil {
+		// or break and clean?
+		return fmt.Errorf("failed to update config")
+	}
+	one := 1
+	size := len(table)
+	if err := cfg.Update(unsafe.Pointer(&one), unsafe.Pointer(&size)); err != nil {
+		// or break and clean?
+		return fmt.Errorf("failed to update config")
+	}
+
+	for i, row := range table {
+		key := i
+		pc := row.Begin + m.Start
+		if err := pcs.Update(unsafe.Pointer(&key), unsafe.Pointer(&pc)); err != nil {
+			// or break and clean?
+			return fmt.Errorf("failed to update PCs")
+		}
+		if err := rips.Update(unsafe.Pointer(&key), unsafe.Pointer(&row.RIP)); err != nil {
+			// or break and clean?
+			return fmt.Errorf("failed to update RIPs")
+		}
+		if err := rsps.Update(unsafe.Pointer(&key), unsafe.Pointer(&row.RSP)); err != nil {
+			// or break and clean?
+			return fmt.Errorf("failed to update RSPs")
 		}
 	}
 

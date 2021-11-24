@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/parca-dev/parca-agent/pkg/buildid"
 	"github.com/parca-dev/parca-agent/pkg/maps"
 	"github.com/parca-dev/parca-agent/pkg/stack/frame"
 )
@@ -89,7 +90,18 @@ func (u *Unwinder) UnwindTableForPid(pid uint32) (PlanTable, error) {
 	return nil, errors.New("failed to find unwind plan table for given PID")
 }
 
+var fdeCache = map[string]frame.FrameDescriptionEntries{}
+
 func readFDEs(path string, start uint64) (frame.FrameDescriptionEntries, error) {
+	buildID, err := buildid.BuildID(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if fde, ok := fdeCache[buildID]; ok {
+		return fde, nil
+	}
+
 	obj, err := elf.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open elf: %w", err)
@@ -111,11 +123,13 @@ func readFDEs(path string, start uint64) (frame.FrameDescriptionEntries, error) 
 
 	// TODO(kakkoyun): Cache the unwind plan table.
 	// TODO(kakkoyun): Can we assume byte order of ELF file same with .eh_frame? We can, right?!
-	fe, err := frame.Parse(ehFrame, obj.ByteOrder, start, pointerSize(obj.Machine), sec.Addr)
+	fde, err := frame.Parse(ehFrame, obj.ByteOrder, start, pointerSize(obj.Machine), sec.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse frame data: %w", err)
 	}
-	return fe, nil
+
+	fdeCache[buildID] = fde
+	return fde, nil
 }
 
 func buildTable(fdes frame.FrameDescriptionEntries) PlanTable {

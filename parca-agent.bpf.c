@@ -8,7 +8,6 @@
  * https://github.com/iovisor/bcc/commit/2d1497cde1cc9835f759a707b42dea83bee378b8
  * for more details
  */
-#include "limits.h"
 #include "vmlinux.h"
 #ifdef asm_inline
 #undef asm_inline
@@ -36,9 +35,16 @@
 // TODO(kakkoyun): Explain.
 #define MAX_PID_MAP_SIZE 1024
 // TODO(kakkoyun): Explain.
-#define DEFAULT_MAX_ENTRIES 10240
+#define MAX_ENTRIES 10240
 // TODO(kakkoyun): Explain.
 #define MAX_BINARY_SEARCH_DEPTH 24
+
+/* Maximum value an `unsigned long int' can hold.  (Minimum is 0.)  */
+#if __WORDSIZE == 64
+#define ULONG_MAX 18446744073709551615UL
+#else
+#define ULONG_MAX 4294967295UL
+#endif
 
 #define BPF_MAP(_name, _type, _key_type, _value_type, _max_entries)           \
   struct bpf_map_def SEC ("maps") _name = {                                   \
@@ -92,13 +98,13 @@ typedef struct stack_unwind_instruction
 
 /*================================ MAPS =====================================*/
 
-BPF_HASH (config, u32, u32, 1); // TODO(kakkoyun): Remove later.
-BPF_HASH (counts, stack_count_key_t, u64, DEFAULT_MAX_ENTRIES);
+BPF_HASH (counts, stack_count_key_t, u64, MAX_ENTRIES);
 BPF_STACK_TRACE (stack_traces, MAX_STACK_ADDRESSES);
 
-BPF_ARRAY (pcs, u32, u64, DEFAULT_MAX_ENTRIES);
-BPF_ARRAY (rips, u32, stack_unwind_instruction_t, DEFAULT_MAX_ENTRIES);
-BPF_ARRAY (rsps, u32, stack_unwind_instruction_t, DEFAULT_MAX_ENTRIES);
+BPF_ARRAY (lookup, u32, u32, 2);        // TODO(kakkoyun): Remove later.
+BPF_ARRAY (pcs, u32, u64, MAX_ENTRIES); // 0xff_ffff
+BPF_ARRAY (rips, u32, stack_unwind_instruction_t, MAX_ENTRIES); // 0xff_ffff
+BPF_ARRAY (rsps, u32, stack_unwind_instruction_t, MAX_ENTRIES); // 0xff_ffff
 BPF_ARRAY (user_stack_traces, u32, u64, MAX_STACK_DEPTH);
 
 // BPF_PID_HASH_OF_MAP (pcs, MAX_PID_MAP_SIZE);
@@ -125,6 +131,110 @@ bpf_map_lookup_or_try_init (void *map, const void *key, const void *init)
   return bpf_map_lookup_elem (map, key);
 }
 
+// TODO(kakkoyun): Simplify binary search.
+static __always_inline u64
+find (u64 rip, u32 size)
+{
+  u32 left, mid = 0;
+  u32 right = size;
+  int i;
+  for (i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++)
+    {
+      if (left > right)
+        break;
+
+      mid = left + (right - left) / 2;
+
+      u32 key = mid;
+      void *val;
+      val = bpf_map_lookup_elem (&pcs, &key);
+      u64 pc = ULONG_MAX;
+      if (val)
+        pc = *(u64 *)val;
+
+      if (rip == pc)
+        return mid;
+
+      if (pc < rip)
+        left = mid + 1;
+      else
+        right = mid - 1;
+    }
+  return -1;
+}
+
+static __always_inline u64
+execute (stack_unwind_instruction_t *ins, u64 rip, u64 rsp, u64 cfa)
+{
+  u64 addr;
+  u64 unsafe_ptr = cfa + ins->offset;
+  switch (ins->op)
+    {
+    case 1: // OpUndefined: Undefined register.
+      if (bpf_probe_read (&addr, 8, &unsafe_ptr) == 0)
+        return addr;
+      break;
+    case 2:                     // OpCfaOffset
+      return rip + ins->offset; // Value stored at some offset from `CFA`.
+    case 3:                     // OpRegister
+      return rsp + ins->offset; // Value of a machine register plus offset.
+    default:
+      return -1; // Unimplemented.
+    }
+  return -1;
+}
+
+static void *
+backtrace (bpf_user_pt_regs_t *regs, struct bpf_map_def *stack)
+{
+  // TODO(kakkoyun): Is there a better way to get current size?
+  u32 max_size = MAX_ENTRIES - 1;
+  u32 one = 1; // Second element is the size of the unwind table.
+  void *val;
+  val = bpf_map_lookup_elem (&lookup, &one);
+  if (val)
+    max_size = *(u32 *)val;
+
+  long unsigned int rip = regs->ip;
+  long unsigned int rsp = regs->sp;
+  int d;
+  for (d = 0; d < MAX_STACK_DEPTH; d++)
+    {
+      if (rip == 0)
+        break;
+
+      if (bpf_map_update_elem (stack, &d, &rip, BPF_ANY) < 0)
+        break;
+
+      int key = find (rip, max_size);
+      if (key < 0)
+        break;
+
+      void *ins;
+      ins = bpf_map_lookup_elem (&rsps, &key);
+      if (ins == NULL)
+        break;
+
+      u64 cfa;
+      cfa = execute ((stack_unwind_instruction_t *)ins, rip, rsp, 0);
+      if (cfa == -1)
+        break;
+
+      ins = bpf_map_lookup_elem (&rips, &key);
+      if (ins == NULL)
+        break;
+
+      rip = execute ((stack_unwind_instruction_t *)ins, rip, rsp, cfa);
+      if (rip == -1)
+        rip = 0;
+
+      rsp = cfa;
+    }
+  return 0;
+}
+
+/*=========================== BPF FUNCTIONS ==============================*/
+
 // This code gets a bit complex. Probably not suitable for casual hacking.
 SEC ("perf_event")
 int
@@ -141,172 +251,41 @@ do_sample (struct bpf_perf_event_data *ctx)
   stack_count_key_t key = { .pid = tgid };
 
   // get user stack
-  u32 index = 0; // Single value config
-  u32 *val;
-  val = bpf_map_lookup_elem (&config, &index);
-  if (pid == val)
-    {
-      key.user_stack_id = bpf_get_prandom_u32 (); // TODO(kakkoyun): Generate a
-                                                  // random number.
-      backtrace (&ctx->regs, &user_stack_traces);
-    }
-  else
-    {
-      int stack_id = bpf_get_stackid (ctx, &stack_traces, BPF_F_USER_STACK);
-      if (stack_id >= 0)
-        key.user_stack_id = stack_id;
-      else
-        key.user_stack_id = 0;
-    }
+  u32 zero = 0; // First element is the PID to lookup.
+  void *val;
+  val = bpf_map_lookup_elem (&lookup, &zero);
+  if (val && pid == *(u32 *)val)
+    // {
+    // key.user_stack_id = bpf_get_prandom_u32 (); // TODO(kakkoyun): Generate
+    // a
+    //                                             // random number.
+    backtrace (&ctx->regs, &user_stack_traces);
+  //   }
+  // else
+  //   {
+  //     int stack_id = bpf_get_stackid (ctx, &stack_traces, BPF_F_USER_STACK);
+  //     if (stack_id >= 0)
+  //       key.user_stack_id = stack_id;
+  //     else
+  //       key.user_stack_id = 0;
+  //   }
+
+  key.user_stack_id = 0;
+  int stack_id = bpf_get_stackid (ctx, &stack_traces, BPF_F_USER_STACK);
+  if (stack_id >= 0)
+    key.user_stack_id = stack_id;
 
   // get kernel stack
   key.kernel_stack_id = bpf_get_stackid (ctx, &stack_traces, 0);
 
-  u64 zero = 0;
+  // u64 zero = 0;
   u64 *count;
   count = bpf_map_lookup_or_try_init (&counts, &key, &zero);
   if (!count)
     return 0;
 
   __sync_fetch_and_add (count, 1);
-
   return 0;
 }
 
 char LICENSE[] SEC ("license") = "GPL";
-
-void
-backtrace (bpf_user_pt_regs_t *regs, u64 *stack)
-{
-  long unsigned int *rip = regs->ip;
-  long unsigned int *rsp = regs->sp;
-  int d;
-  for (d = 0; d < MAX_STACK_DEPTH; d++)
-    {
-      stack[d] = *rip;
-      if (*rip == 0)
-        break;
-
-      int i = binary_search (rip);
-      if (i >= 0)
-        break;
-
-      //     let ins = if let Some(ins) = RSP.get(i) {
-      //         ins
-      //     } else {
-      //         break;
-      //     };
-      void *ins;
-      ins = bpf_map_lookup_elem (&rsps, &i);
-      if (ins == NULL)
-        break;
-
-      //     let cfa = if let Some(cfa) = execute_instruction(&ins, rip, rsp,
-      //     0)
-      //     {
-      //         cfa
-      //     } else {
-      //         break;
-      //     };
-      u64 cfa;
-      cfa = execute_instruction ((stack_unwind_instruction_t *)ins, rip, rsp,
-                                 0);
-      if (cfa == NULL)
-        break;
-
-      //     let ins = if let Some(ins) = RIP.get(i) {
-      //         ins
-      //     } else {
-      //         break;
-      //     };
-      ins = bpf_map_lookup_elem (&rips, &i);
-      if (ins == NULL)
-        break;
-
-      //     rip = execute_instruction(&ins, rip, rsp,
-      //     cfa).unwrap_or_default(); rsp = cfa;
-      rip = execute_instruction ((stack_unwind_instruction_t *)ins, rip, rsp,
-                                 cfa);
-      if (rip == NULL)
-        // rip = default; // TODO(kakkoyun): Fix this.
-        rip = 0;
-      rsp = cfa;
-    }
-  return;
-}
-
-u32
-binary_search (u64 rip)
-{
-  int left = 0;
-  // int right = CONFIG.get (0).unwrap_or (1) - 1;
-  int right = 0xffffffff; // TODO(kakkoyun): Fix this.
-  u32 mid = 0;
-  int i = 0;
-  // while (left <= right)
-  //   {
-  //     mid = (left + right) / 2;
-  //     if (rip < CONFIG.get(mid).unwrap_or(0))
-  //       right = mid - 1;
-  //     else
-  //       left = mid + 1;
-  //   }
-  for (i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++)
-    {
-      if (left > right)
-        break;
-
-      mid = (left + right) / 2;
-
-      // u64 pc = PC.get(i).unwrap_or(u64::MAX);
-      u64 pc = ULONG_MAX;
-      pc = bpf_map_lookup_elem (&pcs, &i);
-      if (pc == NULL)
-        pc = ULONG_MAX;
-
-      if (pc < rip)
-        left = mid;
-      else
-        right = mid;
-    }
-  return mid;
-}
-
-u64 *
-execute_instruction (stack_unwind_instruction_t *ins, u64 rip, u64 rsp,
-                     u64 cfa)
-{
-  //     match ins.op {
-  //         1 => {
-  //             let unsafe_ptr = (cfa as i64 + ins.offset as i64) as *const
-  //             core::ffi::c_void; let mut res: u64 = 0; if unsafe {
-  //             sys::bpf_probe_read(&mut res as *mut _ as *mut _, 8,
-  //             unsafe_ptr) } == 0 {
-  //                 Some(res)
-  //             } else {
-  //                 None
-  //             }
-  //         }
-  //         2 => Some((rip as i64 + ins.offset as i64) as u64),
-  //         3 => Some((rsp as i64 + ins.offset as i64) as u64),
-  //         _ => None,
-  //     }
-  u64 addr;
-  if (ins->op == 1)
-    {
-      u64 unsafe_ptr = cfa + ins->offset;
-
-      int res;
-      res = bpf_probe_read (&addr, 8, &unsafe_ptr);
-      if (res != 0)
-        return NULL;
-    }
-  else if (ins->op == 2)
-    addr = rip + ins->offset;
-  else if (ins->op == 3)
-    addr = rsp + ins->offset;
-  else
-    return NULL;
-
-  return &addr;
-}
