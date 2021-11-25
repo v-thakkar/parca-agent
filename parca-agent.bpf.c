@@ -101,10 +101,10 @@ typedef struct stack_unwind_instruction
 BPF_HASH (counts, stack_count_key_t, u64, MAX_ENTRIES);
 BPF_STACK_TRACE (stack_traces, MAX_STACK_ADDRESSES);
 
-BPF_ARRAY (lookup, u32, u32, 2);        // TODO(kakkoyun): Remove later.
-BPF_ARRAY (pcs, u32, u64, MAX_ENTRIES); // 0xff_ffff
-BPF_ARRAY (rips, u32, stack_unwind_instruction_t, MAX_ENTRIES); // 0xff_ffff
-BPF_ARRAY (rsps, u32, stack_unwind_instruction_t, MAX_ENTRIES); // 0xff_ffff
+BPF_ARRAY (lookup, u32, u32, 2);     // TODO(kakkoyun): Remove later.
+BPF_ARRAY (pcs, u32, u64, 0xffffff); // MAX_ENTRIES
+BPF_ARRAY (rips, u32, stack_unwind_instruction_t, 0xffffff); // 0xff_ffff
+BPF_ARRAY (rsps, u32, stack_unwind_instruction_t, 0xffffff); // 0xff_ffff
 BPF_ARRAY (user_stack_traces, u32, u64, MAX_STACK_DEPTH);
 
 // BPF_PID_HASH_OF_MAP (pcs, MAX_PID_MAP_SIZE);
@@ -145,14 +145,13 @@ find (u64 rip, u32 size)
 
       mid = left + (right - left) / 2;
 
-      u32 key = mid;
-      void *val;
-      val = bpf_map_lookup_elem (&pcs, &key);
+      u64 *val;
+      val = bpf_map_lookup_elem (&pcs, &mid);
       u64 pc = ULONG_MAX;
       if (val)
-        pc = *(u64 *)val;
+        pc = *val;
 
-      if (rip == pc)
+      if (pc == rip)
         return mid;
 
       if (pc < rip)
@@ -190,10 +189,10 @@ backtrace (bpf_user_pt_regs_t *regs, struct bpf_map_def *stack)
   // TODO(kakkoyun): Is there a better way to get current size?
   u32 max_size = MAX_ENTRIES - 1;
   u32 one = 1; // Second element is the size of the unwind table.
-  void *val;
+  u32 *val;
   val = bpf_map_lookup_elem (&lookup, &one);
   if (val)
-    max_size = *(u32 *)val;
+    max_size = *val;
 
   long unsigned int rip = regs->ip;
   long unsigned int rsp = regs->sp;
@@ -210,13 +209,13 @@ backtrace (bpf_user_pt_regs_t *regs, struct bpf_map_def *stack)
       if (key < 0)
         break;
 
-      void *ins;
+      stack_unwind_instruction_t *ins;
       ins = bpf_map_lookup_elem (&rsps, &key);
       if (ins == NULL)
         break;
 
       u64 cfa;
-      cfa = execute ((stack_unwind_instruction_t *)ins, rip, rsp, 0);
+      cfa = execute (ins, rip, rsp, 0);
       if (cfa == -1)
         break;
 
@@ -224,7 +223,7 @@ backtrace (bpf_user_pt_regs_t *regs, struct bpf_map_def *stack)
       if (ins == NULL)
         break;
 
-      rip = execute ((stack_unwind_instruction_t *)ins, rip, rsp, cfa);
+      rip = execute (ins, rip, rsp, cfa);
       if (rip == -1)
         rip = 0;
 
@@ -252,9 +251,9 @@ do_sample (struct bpf_perf_event_data *ctx)
 
   // get user stack
   u32 zero = 0; // First element is the PID to lookup.
-  void *val;
+  u32 *val;
   val = bpf_map_lookup_elem (&lookup, &zero);
-  if (val && pid == *(u32 *)val)
+  if (val && pid == *val)
     // {
     // key.user_stack_id = bpf_get_prandom_u32 (); // TODO(kakkoyun): Generate
     // a
