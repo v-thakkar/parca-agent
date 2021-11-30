@@ -132,34 +132,40 @@ bpf_map_lookup_or_try_init (void *map, const void *key, const void *init)
 }
 
 // TODO(kakkoyun): Simplify binary search.
-static __always_inline u64
-find (u64 rip, u32 size)
+static __always_inline u32
+find (u64 rip)
 {
-  u32 left, mid = 0;
-  u32 right = size;
-  int i;
-  for (i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++)
+  // TODO(kakkoyun): Is there a better way to get current size?
+  u32 size = 0;
+  u32 one = 1; // Second element is the size of the unwind table.
+  u32 *sizeVal;
+  sizeVal = bpf_map_lookup_elem (&lookup, &one);
+
+  if (sizeVal)
+    size = *sizeVal;
+
+  u32 left = 0;
+  u32 right = size - 1;
+  u32 i;
+  for (int j = 0; j < MAX_BINARY_SEARCH_DEPTH; j++)
     {
       if (left > right)
         break;
 
-      mid = left + (right - left) / 2;
+      i = (left + right) / 2;
 
       u64 *val;
-      val = bpf_map_lookup_elem (&pcs, &mid);
+      val = bpf_map_lookup_elem (&pcs, &i);
       u64 pc = ULONG_MAX;
       if (val)
         pc = *val;
 
-      if (pc == rip)
-        return mid;
-
       if (pc < rip)
-        left = mid + 1;
+        left = i;
       else
-        right = mid - 1;
+        right = i;
     }
-  return -1;
+  return i;
 }
 
 static __always_inline u64
@@ -167,33 +173,25 @@ execute (stack_unwind_instruction_t *ins, u64 rip, u64 rsp, u64 cfa)
 {
   u64 addr;
   u64 unsafe_ptr = cfa + ins->offset;
+  u64 res = 0;
   switch (ins->op)
     {
     case 1: // OpUndefined: Undefined register.
       if (bpf_probe_read (&addr, 8, &unsafe_ptr) == 0)
-        return addr;
-      break;
+        res = addr;
     case 2:                     // OpCfaOffset
-      return rip + ins->offset; // Value stored at some offset from `CFA`.
+      res =  rip + ins->offset; // Value stored at some offset from `CFA`.
     case 3:                     // OpRegister
-      return rsp + ins->offset; // Value of a machine register plus offset.
+      res =  rsp + ins->offset; // Value of a machine register plus offset.
     default:
-      return -1; // Unimplemented.
+      res = 0;
     }
-  return -1;
+  return res;
 }
 
-static void *
+static __always_inline void *
 backtrace (bpf_user_pt_regs_t *regs, struct bpf_map_def *stack)
 {
-  // TODO(kakkoyun): Is there a better way to get current size?
-  u32 max_size = MAX_ENTRIES - 1;
-  u32 one = 1; // Second element is the size of the unwind table.
-  u32 *val;
-  val = bpf_map_lookup_elem (&lookup, &one);
-  if (val)
-    max_size = *val;
-
   long unsigned int rip = regs->ip;
   long unsigned int rsp = regs->sp;
   int d;
@@ -205,7 +203,7 @@ backtrace (bpf_user_pt_regs_t *regs, struct bpf_map_def *stack)
       if (bpf_map_update_elem (stack, &d, &rip, BPF_ANY) < 0)
         break;
 
-      int key = find (rip, max_size);
+      int key = find (rip);
       if (key < 0)
         break;
 
