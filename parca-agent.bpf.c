@@ -167,20 +167,22 @@ execute (stack_unwind_instruction_t *ins, u64 rip, u64 rsp, u64 cfa)
 {
   u64 addr;
   u64 unsafe_ptr = cfa + ins->offset;
+  u64 res;
   switch (ins->op)
     {
     case 1: // OpUndefined: Undefined register.
       if (bpf_probe_read (&addr, 8, &unsafe_ptr) == 0)
-        return addr;
-      break;
+        res = addr;
+      else
+	res = -1;
     case 2:                     // OpCfaOffset
-      return rip + ins->offset; // Value stored at some offset from `CFA`.
+      res = rip + ins->offset; // Value stored at some offset from `CFA`.
     case 3:                     // OpRegister
-      return rsp + ins->offset; // Value of a machine register plus offset.
+      res = rsp + ins->offset; // Value of a machine register plus offset.
     default:
-      return -1; // Unimplemented.
+      res = -1; // Unimplemented.
     }
-  return -1;
+  return res;
 }
 
 static void *
