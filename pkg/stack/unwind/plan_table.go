@@ -109,7 +109,7 @@ func (ptb *PlanTableBuilder) PrintTable(writer io.Writer, path string, filterNop
 
 	//table := make(PlanTable, 0, len(fdes))
 	for _, fde := range fdes {
-		fmt.Fprintf(writer, "=> Function start: %x, Frame end: %x\n", fde.Begin(), fde.End())
+		fmt.Fprintf(writer, "=> Frame start: %x, Frame end: %x\n", fde.Begin(), fde.End())
 		tableRows := buildTableRows(fde, 0)
 		fmt.Fprintf(writer, "\t(found %d rows)\n", len(tableRows))
 		for _, tableRow := range tableRows {

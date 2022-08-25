@@ -207,7 +207,7 @@ func executeCIEInstructions(cie *CommonInformationEntry) *FrameContext {
 		instructions: frames,
 		buf:          bytes.NewBuffer(initialInstructions),
 	}
-	//frame.executeDwarfProgram()
+	//	frame.executeDwarfProgram()
 	return frame
 }
 
@@ -218,7 +218,6 @@ func executeDwarfProgramUntilPC(fde *DescriptionEntry, pc uint64) *FrameContext 
 	frameContext.order = fde.order
 	frame.loc = fde.Begin()
 	frame.address = pc
-	//frameContext.ExecuteUntilPC(fde.Instructions)
 
 	return frameContext
 }
