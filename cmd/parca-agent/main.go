@@ -56,6 +56,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/config"
 	"github.com/parca-dev/parca-agent/pkg/debuginfo"
 	"github.com/parca-dev/parca-agent/pkg/discovery"
+	"github.com/parca-dev/parca-agent/pkg/hsperfdata"
 	"github.com/parca-dev/parca-agent/pkg/kconfig"
 	"github.com/parca-dev/parca-agent/pkg/ksym"
 	"github.com/parca-dev/parca-agent/pkg/logger"
@@ -420,6 +421,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 			metadata.Target(flags.Node, flags.MetadataExternalLabels),
 			metadata.Compiler(),
 			metadata.Process(pfs),
+			metadata.JavaProcess(),
 			metadata.System(),
 			metadata.PodHosts(),
 		},
@@ -437,6 +439,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 				ksym.NewKsymCache(logger, reg),
 			),
 			process.NewMappingFileCache(logger),
+			hsperfdata.NewCache(logger),
 			objectfile.NewCache(20, flags.ProfilingDuration),
 			profileWriter,
 			debuginfo.New(
