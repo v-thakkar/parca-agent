@@ -22,10 +22,15 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/hsperfdata"
 )
 
+/*type PerfCache interface {
+	IsJavaProcess(pid int) (bool, error)
+}*/
+
 func JavaProcess() Provider {
+	cache := hsperfdata.NewCache(fs, logger)
 	return &StatelessProvider{"java process", func(pid int) (model.LabelSet, error) {
 
-		java, err := hsperfdata.IsJavaProcess
+		java, err := cache.IsJavaProcess(pid)
 		if err != nil {
 			return nil, fmt.Errorf("failed to determine if PID %d belongs to a java process: %w", pid, err)
 		}
