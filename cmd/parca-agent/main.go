@@ -413,8 +413,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 		})
 	}
 
-	//cache,
-
+	cache := hsperfdata.NewCache(logger)
 	labelsManager := labels.NewManager(
 		logger,
 		// All the metadata providers work best-effort.
@@ -423,7 +422,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 			metadata.Target(flags.Node, flags.MetadataExternalLabels),
 			metadata.Compiler(),
 			metadata.Process(pfs),
-			metadata.JavaProcess(),
+			metadata.JavaProcess(cache),
 			metadata.System(),
 			metadata.PodHosts(),
 		},
