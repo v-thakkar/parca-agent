@@ -22,21 +22,26 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/hsperfdata"
 )
 
-/*type PerfCache interface {
-	IsJavaProcess(pid int) (bool, error)
-}*/
+type JavaABC struct {
+	cache hsperfdata.Cache
+}
 
-func JavaProcess() Provider {
-	cache := hsperfdata.NewCache(fs, logger)
+func NewJavaABC(cache hsperfdata.Cache) JavaABC {
+	return JavaABC{
+		cache: cache,
+	}
+}
+
+func (javaProcess JavaABC) JavaProcess() Provider {
 	return &StatelessProvider{"java process", func(pid int) (model.LabelSet, error) {
 
-		java, err := cache.IsJavaProcess(pid)
+		java, err := javaProcess.cache.IsJavaProcess(pid)
 		if err != nil {
 			return nil, fmt.Errorf("failed to determine if PID %d belongs to a java process: %w", pid, err)
 		}
 
 		return model.LabelSet{
-			"java": model.LabelValue(java),
+			"java": model.LabelValue(fmt.Sprintf("%t", java)),
 		}, nil
 	}}
 }

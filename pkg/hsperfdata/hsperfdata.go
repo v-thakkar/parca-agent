@@ -18,19 +18,19 @@ import (
 	"fmt"
 	"io/fs"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/go-kit/log"
 	"github.com/parca-dev/parca-agent/pkg/perf"
 )
 
 const hsperfdata = "/tmp/hsperfdata_"
 
-type cache struct {
+type Cache struct {
 	pids   map[int]bool
 	fs     fs.FS
 	logger log.Logger
@@ -38,10 +38,16 @@ type cache struct {
 	nsPID  map[int]int
 }
 
-func NewCache(fs fs.FS, logger log.Logger) *cache {
-	return &cache{
+type realfs struct{}
+
+func (f *realfs) Open(name string) (fs.File, error) {
+	return os.Open(name)
+}
+
+func NewCache(logger log.Logger) *Cache {
+	return &Cache{
 		pids:   make(map[int]bool),
-		fs:     fs,
+		fs:     &realfs{},
 		logger: logger,
 		nsPID:  map[int]int{},
 	}
@@ -53,7 +59,7 @@ func NewCache(fs fs.FS, logger log.Logger) *cache {
 // running in containers. Note that pids are assumed to be unique regardless
 // of username.
 
-func (c *cache) IsJavaProcess(pid int) (bool, error) {
+func (c *Cache) IsJavaProcess(pid int) (bool, error) {
 	// Check if the pid is in the cache
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -64,7 +70,7 @@ func (c *cache) IsJavaProcess(pid int) (bool, error) {
 
 	// Look if the pid belongs to the java process running on the host
 	hsperfdataGlob := filepath.Join(hsperfdata, strconv.Itoa(pid))
-	if _, err := fs.Stat(c.fs, hsperfdataGlob); err == nil {
+	if _, err := os.Stat(hsperfdataGlob); err == nil {
 		c.pids[pid] = true
 		return true, nil
 	}

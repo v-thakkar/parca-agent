@@ -413,6 +413,8 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 		})
 	}
 
+	//cache,
+
 	labelsManager := labels.NewManager(
 		logger,
 		// All the metadata providers work best-effort.
@@ -439,8 +441,8 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 				ksym.NewKsymCache(logger, reg),
 			),
 			process.NewMappingFileCache(logger),
-			hsperfdata.NewCache(logger),
 			objectfile.NewCache(20, flags.ProfilingDuration),
+			hsperfdata.NewCache(logger),
 			profileWriter,
 			debuginfo.New(
 				log.With(logger, "component", "debuginfo"),
