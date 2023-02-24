@@ -90,7 +90,7 @@ type CPU struct {
 
 	psMapCache   profiler.ProcessMapCache
 	objFileCache profiler.ObjectFileCache
-	javaPidCache profiler.JavaPidCache
+	//	javaPidCache profiler.JavaPidCache
 
 	metrics *metrics
 
@@ -123,7 +123,7 @@ func NewCPUProfiler(
 	symbolizer profiler.Symbolizer,
 	psMapCache profiler.ProcessMapCache,
 	objFileCache profiler.ObjectFileCache,
-	javaPidCache profiler.JavaPidCache,
+	//	javaPidCache profiler.JavaPidCache,
 	profileWriter profiler.ProfileWriter,
 	debuginfoProcessor profiler.DebugInfoManager,
 	labelsManager profiler.LabelsManager,

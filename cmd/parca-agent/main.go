@@ -441,7 +441,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 			),
 			process.NewMappingFileCache(logger),
 			objectfile.NewCache(20, flags.ProfilingDuration),
-			hsperfdata.NewCache(logger),
+			//hsperfdata.NewCache(logger),
 			profileWriter,
 			debuginfo.New(
 				log.With(logger, "component", "debuginfo"),

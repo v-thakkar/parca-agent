@@ -67,9 +67,9 @@ type ProcessMapCache interface {
 	MappingForPID(pid int) ([]*profile.Mapping, error)
 }
 
-type JavaPidCache interface {
+/*type JavaPidCache interface {
 	IsJavaProcess(pid int) (bool, error)
-}
+}*/
 
 type ProfileWriter interface {
 	Write(ctx context.Context, labels model.LabelSet, prof *profile.Profile) error
