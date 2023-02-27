@@ -414,6 +414,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 	}
 
 	cache := hsperfdata.NewCache(logger)
+
 	labelsManager := labels.NewManager(
 		logger,
 		// All the metadata providers work best-effort.
@@ -441,7 +442,6 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 			),
 			process.NewMappingFileCache(logger),
 			objectfile.NewCache(20, flags.ProfilingDuration),
-			//hsperfdata.NewCache(logger),
 			profileWriter,
 			debuginfo.New(
 				log.With(logger, "component", "debuginfo"),

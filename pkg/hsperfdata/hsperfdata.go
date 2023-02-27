@@ -28,7 +28,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/perf"
 )
 
-const hsperfdata = "/tmp/hsperfdata_"
+const hsperfdata = "/tmp/hsperfdata_*"
 
 type Cache struct {
 	pids   map[int]bool
@@ -68,11 +68,19 @@ func (c *Cache) IsJavaProcess(pid int) (bool, error) {
 		return true, nil
 	}
 
-	// Look if the pid belongs to the java process running on the host
-	hsperfdataGlob := filepath.Join(hsperfdata, strconv.Itoa(pid))
-	if _, err := os.Stat(hsperfdataGlob); err == nil {
-		c.pids[pid] = true
-		return true, nil
+	// List all directories that match the pattern /tmp/hsperfdata_*
+	dirs, err := filepath.Glob(hsperfdata)
+	if err != nil {
+		return false, fmt.Errorf("failed to list directories: %w", err)
+	}
+
+	// Loop over all directories and search for the hsperfdata file for the given pid
+	for _, dir := range dirs {
+		hsperfdataPath := filepath.Join(dir, strconv.Itoa(pid))
+		if _, err := c.fs.Open(hsperfdataPath); err == nil {
+			c.pids[pid] = true
+			return true, nil
+		}
 	}
 
 	// Check if pid has nsPid attached to it
@@ -89,7 +97,8 @@ func (c *Cache) IsJavaProcess(pid int) (bool, error) {
 		c.nsPID[pid] = nsPids[len(nsPids)-1]
 		nsPid = c.nsPID[pid]
 	}
-	// TODO: Add checks
+
+	// TODO(vthakkar): Check for the process mount point.
 	perfdataFiles := fmt.Sprintf("/proc/%d/root/tmp/", pid)
 
 	files, err := ioutil.ReadDir(perfdataFiles)
