@@ -10,6 +10,12 @@ ARG TARGETVARIANT
 WORKDIR /app
 COPY goreleaser/dist dist
 
+# For async profiler
+FROM openjdk:19 as java
+
+# Copy async profiler build
+COPY async-profiler /async-profiler
+
 # NOTICE: See goreleaser.yml for the build paths.
 RUN if [ "${TARGETARCH}" = 'amd64' ]; then \
         cp "dist/parca-agent-${TARGETARCH}_${TARGETOS}_${TARGETARCH}_${TARGETVARIANT:-v1}/parca-agent" . ; \

@@ -64,7 +64,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/perf"
 	"github.com/parca-dev/parca-agent/pkg/process"
 	"github.com/parca-dev/parca-agent/pkg/profiler"
-	"github.com/parca-dev/parca-agent/pkg/profiler/cpu"
+	profiler "github.com/parca-dev/parca-agent/pkg/profiler/cpu"
 	"github.com/parca-dev/parca-agent/pkg/symbol"
 	"github.com/parca-dev/parca-agent/pkg/template"
 	"github.com/parca-dev/parca-agent/pkg/vdso"
@@ -101,6 +101,9 @@ type flags struct {
 	Node          string `kong:"help='The name of the node that the process is running on. If on Kubernetes, this must match the Kubernetes node name.',default='${hostname}'"`
 	ConfigPath    string `default:"" help:"Path to config file."`
 	MemlockRlimit uint64 `default:"${default_memlock_rlimit}" help:"The value for the maximum number of bytes of memory that may be locked into RAM. It is used to ensure the agent can lock memory for eBPF maps. 0 means no limit."`
+
+	// Experimental flag for enabling async profiler to profile java applications, use it at your own peril.
+	EnableAsyncProfiler bool `kong:"help='Enable async profiler for java applications.',default='false'"`
 
 	// Profiler configuration:
 	ProfilingDuration             time.Duration `kong:"help='The agent profiling duration to use. Leave this empty to use the defaults.',default='10s'"`
@@ -467,6 +470,17 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 			bpfProgramLoaded,
 		),
 	}
+
+	if flags.EnableAsyncProfiler {
+		profilers = append(profilers, cpu.NewJavaProfiler(
+			logger,
+			profileWriter,
+			labelsManager,
+			flags.ProfilingDuration,
+			flags.ProfilingCPUSamplingFrequency,
+		))
+	}
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthy" || r.URL.Path == "/ready" || r.URL.Path == "/favicon.ico" {
 			return
