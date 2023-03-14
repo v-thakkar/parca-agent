@@ -39,6 +39,7 @@ linters:
     - varnamelen
     - wrapcheck
     - wsl
+    - interfacebloat
 
 issues:
   exclude-rules:
@@ -48,6 +49,14 @@ issues:
     - path: pkg/elfwriter
       linters:
         - dupl
+    - path: pkg/arguments
+      linters:
+        - stylecheck
+        - nonamedreturns
+        - gosimple
+        - deadcode
+        - forcetypeassert
+        - dupword
 
 
 linters-settings:
