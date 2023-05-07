@@ -44,19 +44,19 @@ type AsyncProfiler struct {
 
 type ProfilerOption func(*AsyncProfiler)
 
-func WithEventType(eventType string) ProfilerOption {
+func EventType(eventType string) ProfilerOption {
 	return func(p *AsyncProfiler) {
 		p.options["event"] = eventType
 	}
 }
 
-func WithDuration(duration string) ProfilerOption {
+func Duration(duration string) ProfilerOption {
 	return func(p *AsyncProfiler) {
 		p.options["duration"] = duration
 	}
 }
 
-func WithOutputFile(outputFile string) ProfilerOption {
+func OutputFile(outputFile string) ProfilerOption {
 	return func(p *AsyncProfiler) {
 		p.options["file"] = outputFile
 	}
